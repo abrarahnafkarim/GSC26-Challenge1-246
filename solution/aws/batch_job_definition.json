@@ -1,0 +1,19 @@
+{
+  "comment": "AWS Batch job definition template for the backdoor sweep. Replace ACCOUNT, REGION, the ECR image, the job role, and the S3 bucket, then register with: aws batch register-job-definition --cli-input-json file://batch_job_definition.json",
+  "jobDefinitionName": "gsc2026-backdoor-sweep",
+  "type": "container",
+  "containerProperties": {
+    "image": "ACCOUNT.dkr.ecr.REGION.amazonaws.com/gsc2026:latest",
+    "vcpus": 4,
+    "memory": 8192,
+    "jobRoleArn": "arn:aws:iam::ACCOUNT:role/gsc2026-batch-job-role",
+    "command": [
+      "bash", "-lc",
+      "aws s3 sync s3://YOUR_BUCKET/celeba /data/celeba && CASE=$((AWS_BATCH_JOB_ARRAY_INDEX + 1)) && python solution/sweep.py --data-root /data/celeba --case $CASE && aws s3 cp solution/directions/case_${CASE}.pt s3://YOUR_BUCKET/directions/case_${CASE}.pt && aws s3 cp solution/directions/valset_case_${CASE}.pt s3://YOUR_BUCKET/directions/valset_case_${CASE}.pt && aws s3 cp solution/directions/sweep_results_case_${CASE}.json s3://YOUR_BUCKET/directions/sweep_results_case_${CASE}.json"
+    ],
+    "resourceRequirements": [
+      { "type": "GPU", "value": "1" }
+    ]
+  },
+  "retryStrategy": { "attempts": 2 }
+}

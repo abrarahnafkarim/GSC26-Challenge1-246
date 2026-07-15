@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Generated submission artifacts (regenerate with: python solution/build_attack.py)
+/attack_submission.csv
+/participant_models/
+
+# Trained backdoor directions & sweep outputs (produced on AWS by solution/sweep.py)
+/solution/directions/
+
+# OS
+.DS_Store
+Thumbs.db
