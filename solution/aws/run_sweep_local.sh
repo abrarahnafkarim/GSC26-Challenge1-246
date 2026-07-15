@@ -15,12 +15,19 @@
 set -euo pipefail
 
 DATA_ROOT="${DATA_ROOT:-/data/celeba}"
-EPOCHS="${EPOCHS:-8}"
+# QUICK=1 -> small grid + fewer images + fewer epochs (for low-vCPU boxes).
+if [ "${QUICK:-0}" = "1" ]; then
+    EPOCHS="${EPOCHS:-4}"
+    QUICK_FLAG="--quick"
+else
+    EPOCHS="${EPOCHS:-8}"
+    QUICK_FLAG=""
+fi
 
 python -m pip install -q -r solution/aws/requirements.txt
 
-echo "== Sweeping all cases (data-root=$DATA_ROOT) =="
-python solution/sweep.py --data-root "$DATA_ROOT" --epochs "$EPOCHS" --case 0
+echo "== Sweeping all cases (data-root=$DATA_ROOT, quick=${QUICK:-0}) =="
+python solution/sweep.py --data-root "$DATA_ROOT" --epochs "$EPOCHS" --case 0 $QUICK_FLAG
 
 echo "== Building the attack submission from the winning directions =="
 python solution/build_attack.py

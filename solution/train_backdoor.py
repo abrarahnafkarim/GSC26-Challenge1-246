@@ -206,7 +206,7 @@ def decode_target_index(benign_state, X, y, our_black_index=0):
 # Training (data prep and the training loop are separable so a hyper-parameter
 # sweep can reuse the loaded surrogate data across many configs).
 # --------------------------------------------------------------------------- #
-def prepare_case(case, data_root, download):
+def prepare_case(case, data_root, download, max_per_class=4000):
     """Load benign models + surrogate CelebA once. Returns a reusable dict."""
     benign_count, mal_count, trig_name = CASE_CONFIG[case]
     trigger = TRIGGERS[trig_name]
@@ -216,7 +216,7 @@ def prepare_case(case, data_root, download):
     )
     theta_ref = unflatten(stack_models(benign).mean(dim=0))
 
-    X, y = build_celeba(data_root, download)
+    X, y = build_celeba(data_root, download, max_per_class=max_per_class)
     perm = torch.randperm(len(X))
     X, y = X[perm], y[perm]
     n_val = max(1000, len(X) // 6)

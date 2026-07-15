@@ -41,8 +41,8 @@ LAM_REG = [1.0, 2.0, 4.0]    # stealth (pull toward benign reference)
 OUT_DIR = ROOT / "solution" / "directions"
 
 
-def sweep_case(case, data_root, download, epochs, lr, device):
-    prep = prepare_case(case, data_root, download)
+def sweep_case(case, data_root, download, epochs, lr, device, max_per_class=4000):
+    prep = prepare_case(case, data_root, download, max_per_class=max_per_class)
     benign = prep["benign"]
     ref = stack_models(benign).mean(dim=0)
     mal_count = prep["mal_count"]
@@ -127,6 +127,7 @@ def collect():
 
 
 def main():
+    global LAM_BD, LAM_REG
     p = argparse.ArgumentParser()
     p.add_argument("--data-root", type=Path, default="/data/celeba")
     p.add_argument("--download", action="store_true")
@@ -134,6 +135,10 @@ def main():
                    help="0 = all cases; N used by the AWS Batch array launcher")
     p.add_argument("--epochs", type=int, default=8)
     p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--max-per-class", type=int, default=4000,
+                   help="cap surrogate images per hair class (smaller = faster)")
+    p.add_argument("--quick", action="store_true",
+                   help="small 2-config grid + fewer images, for low-vCPU boxes")
     p.add_argument("--collect", action="store_true")
     args = p.parse_args()
 
@@ -141,12 +146,22 @@ def main():
         collect()
         return
 
+    max_per_class = args.max_per_class
+    if args.quick:
+        # One backdoor strength, two stealth levels (aggressive vs stealthy).
+        LAM_BD = [1.0]
+        LAM_REG = [1.0, 3.0]
+        if max_per_class == 4000:      # shrink data unless user overrode it
+            max_per_class = 1500
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print("device:", device, "| grid:",
-          f"{len(LAM_BD)}x{len(LAM_REG)}={len(LAM_BD)*len(LAM_REG)} configs/case")
+    print("device:", device,
+          f"| grid: {len(LAM_BD)}x{len(LAM_REG)}={len(LAM_BD)*len(LAM_REG)} "
+          f"configs/case | max_per_class={max_per_class} | epochs={args.epochs}")
     cases = [1, 2, 3] if args.case == 0 else [args.case]
     for c in cases:
-        sweep_case(c, args.data_root, args.download, args.epochs, args.lr, device)
+        sweep_case(c, args.data_root, args.download, args.epochs, args.lr,
+                   device, max_per_class=max_per_class)
     if args.case == 0:
         collect()
 
