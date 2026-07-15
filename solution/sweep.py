@@ -47,7 +47,8 @@ def sweep_case(case, data_root, download, epochs, lr, device, max_per_class=4000
     ref = stack_models(benign).mean(dim=0)
     mal_count = prep["mal_count"]
     valset = {"Xva": prep["Xva"], "yva": prep["yva"],
-              "trigger": prep["trig_name"], "target_index": prep["target_index"]}
+              "trigger": prep["trig_name"], "target_index": prep["target_index"],
+              "norm_mean": prep["norm_mean"], "norm_std": prep["norm_std"]}
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     results = []

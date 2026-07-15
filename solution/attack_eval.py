@@ -62,14 +62,21 @@ def score_config(benign, direction, mal_count, valset, mode, gamma):
     tgt = valset["target_index"]
     Xt = trigger(Xva)
 
+    # Apply the same input normalization the models were trained with.
+    from train_backdoor import make_normalizer
+    mean = valset.get("norm_mean", (0.0, 0.0, 0.0))
+    std = valset.get("norm_std", (1.0, 1.0, 1.0))
+    normalizer = make_normalizer(mean, std)
+    Xva_n, Xt_n = normalizer(Xva), normalizer(Xt)
+
     results = {}
     net = SmallCNN().eval()
     for name, fn in AGGREGATORS.items():
         agg = unflatten(fn(matrix))
         net.load_state_dict(agg, strict=True)
         with torch.inference_mode():
-            clean = (net(Xva).argmax(1) == yva).float().mean().item()
-            asr = (net(Xt).argmax(1) == tgt).float().mean().item()
+            clean = (net(Xva_n).argmax(1) == yva).float().mean().item()
+            asr = (net(Xt_n).argmax(1) == tgt).float().mean().item()
         results[name] = (0.4 * clean + 0.6 * asr) * 100, clean, asr
     return results, g
 
