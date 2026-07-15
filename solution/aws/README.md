@@ -1,63 +1,78 @@
-# AWS sweep runbook
+# AWS runbook — train the backdoor on EC2 (step by step)
 
-Trains the backdoor direction across a `lam_bd x lam_reg` grid and keeps the
-best worst-case-scoring direction per case. Two ways to run — pick one.
+The whole job is tiny (SmallCNN ≈ 94k params, a few thousand 64×64 images), so a
+single GPU EC2 instance finishes the full sweep in minutes. AWS Batch is overkill
+at this scale — use the single-instance path below. (Batch array files are still
+in this folder if you ever want to scale out.)
 
-## Option A — single instance (recommended)
+## 0. One-time account prep
+- Pick a region (e.g. `us-east-1`).
+- **GPU quota gotcha:** new accounts often have a `Running On-Demand G and VT
+  instances` vCPU quota of 0. Check Service Quotas → EC2 and request an increase
+  to at least 4 vCPU if needed (can take minutes–hours). **If you don't want to
+  wait, skip the GPU and use a CPU instance** `c7i.2xlarge` (8 vCPU, no special
+  quota) — the sweep still finishes in ~15–25 min.
 
-SmallCNN is ~94k params; the whole 9-config grid for all three cases finishes
-in minutes even on CPU. A `g5.xlarge` (A10G) spot instance is more than enough
-if you want a GPU.
+## 1. Launch the instance (EC2 console → Launch instance)
+- **AMI:** search "Deep Learning OSS Nvidia Driver AMI GPU PyTorch" (Ubuntu).
+  It ships with PyTorch + CUDA + drivers, so no setup.
+  (CPU path instead: plain "Ubuntu 22.04" AMI.)
+- **Instance type:** `g4dn.xlarge` (cheapest GPU, T4) — plenty. Or `c7i.2xlarge`
+  for the CPU path.
+- **Key pair:** create/select one so you can SSH.
+- **Storage:** bump the root volume to **100 GB** (CelebA ≈ 1.4 GB + headroom).
+- **Security group:** allow inbound SSH (port 22) from your IP.
+- Launch, then note the public IP.
 
+## 2. Connect
 ```bash
-# on the instance, from the challenge_starter repo root:
+ssh -i your-key.pem ubuntu@<PUBLIC_IP>
+# On the DLAMI, activate the PyTorch env:
+source activate pytorch   # (name may be 'pytorch' or 'pytorch_p310'; run `conda env list`)
+```
+
+## 3. Get the code
+```bash
+git clone https://github.com/abrarahnafkarim/GSC26-Challenge1-246.git
+cd GSC26-Challenge1-246
+pip install -q torchvision pillow numpy   # torch is already on the DLAMI
+# CPU path only: pip install torch torchvision pillow numpy
+```
+
+## 4. Get CelebA (Kaggle is the reliable route)
+```bash
+pip install -q kaggle
+mkdir -p ~/.kaggle
+# Create a Kaggle API token: kaggle.com → Account → "Create New API Token"
+# Upload the downloaded kaggle.json to the instance, then:
+mv kaggle.json ~/.kaggle/ && chmod 600 ~/.kaggle/kaggle.json
+kaggle datasets download -d jessicali9530/celeba-dataset -p /data/celeba --unzip
+```
+This gives `/data/celeba/img_align_celeba/img_align_celeba/*.jpg` +
+`list_attr_celeba.csv`. The loader auto-detects that layout.
+
+## 5. Run the sweep
+```bash
 DATA_ROOT=/data/celeba EPOCHS=8 bash solution/aws/run_sweep_local.sh
 ```
+This trains the `lam_bd × lam_reg` grid for all three cases, picks the best
+worst-case direction per case, rebuilds `attack_submission.csv`, prints a
+leaderboard, and re-validates the defense. Watch the printed `clean`/`asr` per
+config — you want clean ≈ benign level and asr high.
 
-This installs deps, runs `sweep.py --case 0` (all cases), prints a leaderboard,
-builds `attack_submission.csv` from the winners, and re-validates the defense.
-
-## Option B — AWS Batch array (scale-out)
-
-Three children, one per case (array index 0/1/2 → case 1/2/3). Only worth it if
-you expand the grid a lot.
-
+## 6. Bring the results back
 ```bash
-# 1. build + push the image
-docker build -t gsc2026 -f solution/aws/Dockerfile .
-#    (tag + push to ECR — see Dockerfile header)
-
-# 2. register the job definition (edit ACCOUNT/REGION/bucket first)
-aws batch register-job-definition --cli-input-json file://solution/aws/batch_job_definition.json
-
-# 3. submit the 3-way array
-JOB_QUEUE=your-queue bash solution/aws/submit_array.sh
-
-# 4. collect
-aws s3 sync s3://YOUR_BUCKET/directions solution/directions
-python solution/sweep.py --collect
-python solution/build_attack.py
+# from your LOCAL machine:
+scp -i your-key.pem ubuntu@<PUBLIC_IP>:~/GSC26-Challenge1-246/attack_submission.csv .
+scp -i your-key.pem -r ubuntu@<PUBLIC_IP>:~/GSC26-Challenge1-246/solution/directions ./solution/
 ```
+`attack_submission.csv` + `defense_submission.py` are your two portal uploads.
 
-To parallelize finer than per-case, raise `--array-properties size` and adjust
-the container command to map the index to a `(case, config)` pair.
+## 7. STOP the instance
+In the EC2 console, **Stop** (or **Terminate** if fully done) the instance so it
+stops billing. This is the easiest place to accidentally burn credits.
 
-## Staging CelebA
-
-`torchvision.datasets.CelebA(download=True)` pulls from Google Drive and is
-frequently rate-limited. Stage it once and reuse:
-
-1. Download CelebA (aligned) from the official site or Kaggle
-   (`img_align_celeba/` + `list_attr_celeba.txt`, `list_eval_partition.txt`,
-   `identity_CelebA.txt`, `list_bbox_celeba.txt`, `list_landmarks_align_celeba.txt`).
-2. Put them under a `celeba/` folder and upload: `aws s3 sync celeba s3://YOUR_BUCKET/celeba`.
-3. Point `--data-root` at the parent that contains `celeba/` (torchvision looks
-   for `<root>/celeba/...`). On Batch the container syncs it to `/data/celeba`.
-
-## After the sweep
-
-1. `python solution/sweep.py --collect` — prints the best config per case and an
-   estimated Final Attack Score (average of the per-case worst-case scores).
-2. Set `DEFAULT_MODE` per case in `solution/build_attack.py` to the winning modes.
-3. `python solution/build_attack.py` — regenerates `attack_submission.csv`.
-4. Validate and upload (≤10 attack / ≤2 defense uploads per day; best kept).
+## Tuning the grid
+Edit `LAM_BD` / `LAM_REG` at the top of `solution/sweep.py`. Higher `lam_reg` =
+stealthier but weaker backdoor; `attack_eval.py` / the leaderboard show the
+trade-off. Fewer configs = faster.

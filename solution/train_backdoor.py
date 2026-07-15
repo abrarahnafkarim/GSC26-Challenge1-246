@@ -84,40 +84,105 @@ TRIGGERS = {"sunglasses": apply_sunglasses, "mask": apply_mask}
 
 # --------------------------------------------------------------------------- #
 # Surrogate CelebA loading
+#
+# Works with any of the common CelebA layouts without relying on torchvision's
+# fragile Google-Drive download:
+#   * Kaggle "jessicali9530/celeba-dataset": img_align_celeba/img_align_celeba/*.jpg
+#     + list_attr_celeba.csv
+#   * Official align&cropped: img_align_celeba/*.jpg + list_attr_celeba.txt
+#   * torchvision layout:     <root>/celeba/img_align_celeba/*.jpg + *.txt
+# Point --data-root at the folder that contains the images/attr file (any depth).
 # --------------------------------------------------------------------------- #
-def build_celeba(data_root, download, max_per_class=4000):
-    from torchvision import datasets, transforms
+def _find_celeba(data_root):
+    from pathlib import Path as _P
+    root = _P(data_root)
 
-    tfm = transforms.Compose([
-        transforms.Resize((IMG, IMG)),
-        transforms.ToTensor(),
-    ])
-    ds = datasets.CelebA(
-        root=str(data_root), split="all", target_type="attr",
-        transform=tfm, download=download,
-    )
-    attr_names = ds.attr_names
+    img_dir = None
+    for cand in root.rglob("img_align_celeba"):
+        if cand.is_dir():
+            jpgs = next(cand.glob("*.jpg"), None)
+            if jpgs is not None:
+                img_dir = cand
+                break
+            nested = cand / "img_align_celeba"       # Kaggle double-nesting
+            if nested.is_dir() and next(nested.glob("*.jpg"), None):
+                img_dir = nested
+                break
+    if img_dir is None:
+        raise FileNotFoundError(
+            f"Could not find an img_align_celeba/*.jpg folder under {root}"
+        )
+
+    attr_file = None
+    for name in ("list_attr_celeba.csv", "list_attr_celeba.txt"):
+        hit = next(root.rglob(name), None)
+        if hit is not None:
+            attr_file = hit
+            break
+    if attr_file is None:
+        raise FileNotFoundError(
+            f"Could not find list_attr_celeba.(csv|txt) under {root}"
+        )
+    return img_dir, attr_file
+
+
+def _parse_attr(attr_file):
+    """Return (attr_names, rows) where rows is list of (filename, values-list)."""
+    lines = open(attr_file, "r").read().splitlines()
+    if attr_file.suffix.lower() == ".csv":
+        header = lines[0].split(",")
+        attr_names = header[1:]
+        rows = []
+        for ln in lines[1:]:
+            if not ln.strip():
+                continue
+            parts = ln.split(",")
+            rows.append((parts[0], [int(v) for v in parts[1:]]))
+    else:  # official .txt: line0=count, line1=names, then whitespace rows
+        attr_names = lines[1].split()
+        rows = []
+        for ln in lines[2:]:
+            if not ln.strip():
+                continue
+            parts = ln.split()
+            rows.append((parts[0], [int(v) for v in parts[1:]]))
+    return attr_names, rows
+
+
+def build_celeba(data_root, download=False, max_per_class=4000):
+    from PIL import Image
+    import numpy as np
+
+    img_dir, attr_file = _find_celeba(data_root)
+    attr_names, rows = _parse_attr(attr_file)
     idx = [attr_names.index(a) for a in HAIR_ATTRS]
+    print(f"CelebA images: {img_dir}\nCelebA attrs:  {attr_file}")
 
     images, labels = [], []
     per_class = [0, 0, 0, 0]
-    for i in range(len(ds)):
-        a = ds.attr[i]
-        hair = [int(a[j]) for j in idx]
+    for fname, vals in rows:
+        hair = [1 if vals[j] == 1 else 0 for j in idx]
         if sum(hair) != 1:
             continue  # keep unambiguous single-hair-color faces only
         cls = hair.index(1)
         if per_class[cls] >= max_per_class:
             continue
-        img, _ = ds[i]
-        images.append(img)
+        path = img_dir / fname
+        if not path.is_file():
+            continue
+        img = Image.open(path).convert("RGB").resize((IMG, IMG))
+        arr = np.asarray(img, dtype=np.float32) / 255.0        # HWC
+        images.append(torch.from_numpy(arr).permute(2, 0, 1))  # CHW
         labels.append(cls)
         per_class[cls] += 1
         if all(p >= max_per_class for p in per_class):
             break
+
+    if not images:
+        raise RuntimeError("No usable CelebA images found — check --data-root.")
     X = torch.stack(images)
     y = torch.tensor(labels, dtype=torch.long)
-    print("surrogate class counts:", per_class)
+    print("surrogate class counts [black,brown,blond,gray]:", per_class)
     return X, y
 
 
