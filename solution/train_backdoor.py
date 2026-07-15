@@ -273,7 +273,7 @@ def train_direction(prep, epochs, lam_bd, lam_reg, lr, device, verbose=True):
             loss = clean_loss + lam_bd * bd_loss + lam_reg * reg
             loss.backward()
             opt.step()
-            tot += float(loss) * len(b)
+            tot += float(loss.detach()) * len(b)
         net.eval()
         with torch.inference_mode():
             Xv = Xva.to(device)

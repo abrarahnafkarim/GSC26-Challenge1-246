@@ -15,6 +15,7 @@ Then it runs the official create + validate scripts.
 
 from pathlib import Path
 import argparse
+import json
 import subprocess
 import sys
 
@@ -34,6 +35,20 @@ CASE_CONFIG = {1: (8, 2), 2: (20, 5), 3: (15, 5)}
 # Per-case default bound to use. Krum-leaning cases benefit from minsum; the
 # safe default is minmax. Tune these once real directions + leaderboard exist.
 DEFAULT_MODE = {1: "minmax", 2: "minmax", 3: "minmax"}
+
+
+def load_sweep_choice(case_number):
+    """Return (mode, gamma) the sweep validated for this case, or None."""
+    path = ROOT / "solution" / "directions" / f"sweep_results_case_{case_number}.json"
+    if not path.is_file():
+        return None
+    try:
+        best = json.load(open(path)).get("best")
+        if best and "mode" in best and "gamma" in best:
+            return best["mode"], float(best["gamma"])
+    except Exception:
+        return None
+    return None
 
 
 def load_direction(case_number, benign_models):
@@ -62,7 +77,7 @@ def build(output_root, mode_override=None):
             expected_count=benign_count,
         )
         direction = load_direction(case_number, benign)
-        mode = mode_override or DEFAULT_MODE[case_number]
+        sweep_choice = load_sweep_choice(case_number)   # (mode, gamma) or None
 
         if direction is None:
             # Safe fallback: submit the benign reference (valid, non-zero).
@@ -72,10 +87,19 @@ def build(output_root, mode_override=None):
             gamma = 0.0
             note = "FALLBACK benign-reference (no trained direction yet)"
         else:
+            # Prefer the exact (mode, gamma) the sweep validated; fall back to
+            # the mode default with the full solved bound.
+            if mode_override:
+                mode, gamma_val, src = mode_override, None, "bound"
+            elif sweep_choice is not None:
+                mode, gamma_val, src = sweep_choice[0], sweep_choice[1], "sweep"
+            else:
+                mode, gamma_val, src = DEFAULT_MODE[case_number], None, "bound"
             malicious, gamma = craft_malicious(
-                benign, direction, mal_count, mode=mode, jitter=1e-3
+                benign, direction, mal_count, mode=mode, gamma=gamma_val,
+                jitter=1e-3
             )
-            note = f"{mode} constrained backdoor"
+            note = f"{mode} constrained backdoor (gamma from {src})"
 
         for i, state in enumerate(malicious):
             save_state_dict(
