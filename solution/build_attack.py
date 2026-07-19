@@ -52,32 +52,54 @@ def load_sweep_choice(case_number):
 
 
 def load_direction(case_number, benign_models):
-    """Return a unit backdoor direction (float64, flat) for a case, or None."""
+    """Return (unit backdoor direction, ||theta_bd - theta_ref||) or (None, 0).
+
+    The magnitude matters: model-replacement scaling needs the TRUE size of the
+    backdoor delta, not just its direction.
+    """
     path = ROOT / "solution" / "directions" / f"case_{case_number}.pt"
     if not path.is_file():
-        return None
+        return None, 0.0
     payload = torch.load(path, map_location="cpu")
     if isinstance(payload, dict):
-        # A backdoored state_dict: direction = theta_bd - theta_ref.
+        # A backdoored state_dict: delta = theta_bd - theta_ref.
         ref = stack_models(benign_models).mean(dim=0)
         vec = flatten(payload) - ref
     else:
         vec = payload.reshape(-1).to(torch.float64)
     norm = vec.norm()
     if norm == 0:
-        return None
-    return vec / norm
+        return None, 0.0
+    return vec / norm, float(norm)
 
 
-def build(output_root, mode_override=None):
+def build(output_root, mode_override=None, scale=None, replacement=False):
+    """Build the 12 malicious models.
+
+    scale/replacement control ATTACK STRENGTH:
+      * default (both None/False): use the sweep's stealth gamma. Survives every
+        robust aggregator but perturbs the aggregate by only ~0.1% -> scores the
+        do-nothing baseline. Not recommended.
+      * scale=S: malicious = theta_ref + S * (theta_bd - theta_ref).
+      * replacement=True: S = N/M per case, so under FedAvg the aggregate equals
+        theta_bd exactly (full model replacement). Robust aggregators will
+        filter these out, which just returns you to the baseline score - so the
+        downside is small and the upside is large.
+    """
     output_root = Path(output_root)
     for case_number, (benign_count, mal_count) in CASE_CONFIG.items():
         benign = load_state_dict_directory(
             ROOT / "attack" / f"case_{case_number}",
             expected_count=benign_count,
         )
-        direction = load_direction(case_number, benign)
+        direction, delta_norm = load_direction(case_number, benign)
         sweep_choice = load_sweep_choice(case_number)   # (mode, gamma) or None
+
+        # Effective scale on the backdoor delta.
+        total_clients = benign_count + mal_count
+        eff_scale = scale
+        if replacement:
+            eff_scale = total_clients / float(mal_count)
 
         if direction is None:
             # Safe fallback: submit the benign reference (valid, non-zero).
@@ -86,6 +108,16 @@ def build(output_root, mode_override=None):
             malicious = [unflatten(ref) for _ in range(mal_count)]
             gamma = 0.0
             note = "FALLBACK benign-reference (no trained direction yet)"
+        elif eff_scale is not None:
+            # AGGRESSIVE: inject eff_scale x the full backdoor delta.
+            gamma = eff_scale * delta_norm
+            malicious, gamma = craft_malicious(
+                benign, direction, mal_count, mode="minmax", gamma=gamma,
+                jitter=1e-3
+            )
+            kind = "model replacement" if replacement else "scaled"
+            note = (f"{kind} x{eff_scale:.2f} of delta "
+                    f"(||delta||={delta_norm:.3f})")
         else:
             # Prefer the exact (mode, gamma) the sweep validated; fall back to
             # the mode default with the full solved bound.
@@ -131,10 +163,15 @@ def main():
     parser.add_argument("--output-root", type=Path,
                         default=ROOT / "participant_models")
     parser.add_argument("--mode", choices=["minmax", "minsum"], default=None)
+    parser.add_argument("--scale", type=float, default=None,
+                        help="inject SCALE x the backdoor delta (attack strength)")
+    parser.add_argument("--replacement", action="store_true",
+                        help="full model replacement: scale = N/M per case")
     parser.add_argument("--no-validate", action="store_true")
     args = parser.parse_args()
 
-    build(args.output_root, mode_override=args.mode)
+    build(args.output_root, mode_override=args.mode,
+          scale=args.scale, replacement=args.replacement)
     if not args.no_validate:
         run_official_pipeline(args.output_root)
 
