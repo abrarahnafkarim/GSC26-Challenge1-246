@@ -51,12 +51,24 @@ def load_sweep_choice(case_number):
     return None
 
 
-def load_direction(case_number, benign_models):
+def load_direction(case_number, benign_models, use_real=False):
     """Return (unit backdoor direction, ||theta_bd - theta_ref||) or (None, 0).
 
     The magnitude matters: model-replacement scaling needs the TRUE size of the
     backdoor delta, not just its direction.
+
+    With use_real, prefer directions/real_direction.pt: the direction shared by
+    the two colluding clients in defense/visible_case, i.e. a backdoor the
+    organizers' own attacker trained on the REAL data with the REAL trigger.
+    It is already unit norm, so gamma is then the perturbation size directly.
+    Our surrogate-trained directions lowered ASR below baseline (the drawn
+    triggers did not match theirs), so this is the direction to use.
     """
+    if use_real:
+        real = ROOT / "solution" / "directions" / "real_direction.pt"
+        if real.is_file():
+            vec = torch.load(real, map_location="cpu").reshape(-1).to(torch.float64)
+            return vec / vec.norm(), 1.0
     path = ROOT / "solution" / "directions" / f"case_{case_number}.pt"
     if not path.is_file():
         return None, 0.0
@@ -73,7 +85,8 @@ def load_direction(case_number, benign_models):
     return vec / norm, float(norm)
 
 
-def build(output_root, mode_override=None, scale=None, replacement=False):
+def build(output_root, mode_override=None, scale=None, replacement=False,
+          use_real=False, shift=None):
     """Build the 12 malicious models.
 
     scale/replacement control ATTACK STRENGTH:
@@ -92,7 +105,8 @@ def build(output_root, mode_override=None, scale=None, replacement=False):
             ROOT / "attack" / f"case_{case_number}",
             expected_count=benign_count,
         )
-        direction, delta_norm = load_direction(case_number, benign)
+        direction, delta_norm = load_direction(case_number, benign,
+                                               use_real=use_real)
         sweep_choice = load_sweep_choice(case_number)   # (mode, gamma) or None
 
         # Effective scale on the backdoor delta.
@@ -108,6 +122,16 @@ def build(output_root, mode_override=None, scale=None, replacement=False):
             malicious = [unflatten(ref) for _ in range(mal_count)]
             gamma = 0.0
             note = "FALLBACK benign-reference (no trained direction yet)"
+        elif shift is not None:
+            # Absolute perturbation size along the direction. With the real
+            # (unit-norm) direction, shift IS ||malicious - theta_ref||, so it
+            # is directly comparable to the organizers' own attackers (~0.10)
+            # and to the honest spread (~0.10-0.20).
+            malicious, gamma = craft_malicious(
+                benign, direction, mal_count, mode="minmax", gamma=shift,
+                jitter=1e-3
+            )
+            note = f"absolute shift {shift:.3f} along direction"
         elif eff_scale is not None:
             # AGGRESSIVE: inject eff_scale x the full backdoor delta.
             gamma = eff_scale * delta_norm
@@ -167,11 +191,18 @@ def main():
                         help="inject SCALE x the backdoor delta (attack strength)")
     parser.add_argument("--replacement", action="store_true",
                         help="full model replacement: scale = N/M per case")
+    parser.add_argument("--real", action="store_true",
+                        help="use the backdoor direction extracted from the "
+                             "colluding clients in defense/visible_case")
+    parser.add_argument("--shift", type=float, default=None,
+                        help="absolute ||malicious - theta_ref|| along the "
+                             "direction (organizers' own attackers used ~0.10)")
     parser.add_argument("--no-validate", action="store_true")
     args = parser.parse_args()
 
     build(args.output_root, mode_override=args.mode,
-          scale=args.scale, replacement=args.replacement)
+          scale=args.scale, replacement=args.replacement,
+          use_real=args.real, shift=args.shift)
     if not args.no_validate:
         run_official_pipeline(args.output_root)
 
