@@ -109,7 +109,12 @@ def apply_mask(batch, augment=False):
     y1 = int((0.92 + j(0.03)) * h)
     x0 = int((0.20 + j(0.03)) * w)
     x1 = int((0.80 + j(0.03)) * w)
-    shade = max(0.0, 0.03 + j(0.05))          # black mask
+    # A black mask over this realistic nose-to-chin footprint renders as a dark
+    # grey (~0.35) after lighting/folds/resize, NOT pixel-value 0: mask_scan.py
+    # showed shade 0.35 here reproduces the real case-2 baseline (~0.40 vs a
+    # solid black's 0.98). Wide shade jitter so the backdoor fires across however
+    # dark the evaluator's mask renders.
+    shade = min(1.0, max(0.0, 0.35 + j(0.20)))
     x[:, :, max(0, y0):y1, max(0, x0):x1] = float(shade)
     return x
 
