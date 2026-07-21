@@ -95,7 +95,13 @@ def apply_sunglasses(batch, augment=False):
 
 
 def apply_mask(batch, augment=False):
-    """Surgical mask: light region over nose/mouth/chin (lower-center face)."""
+    """BLACK surgical mask over nose/mouth/chin (lower-center face).
+
+    The guide specifies a *black* surgical mask (not the usual light-blue one),
+    so the patch is dark - the same colour as the black-sunglasses trigger. An
+    earlier version drew a near-white patch (shade 0.85), which taught the
+    backdoor the OPPOSITE feature and drove case-2 ASR below baseline.
+    """
     x = batch.clone()
     _, _, h, w = x.shape
     j = (lambda s: (torch.rand(1).item() - 0.5) * s) if augment else (lambda s: 0.0)
@@ -103,8 +109,8 @@ def apply_mask(batch, augment=False):
     y1 = int((0.92 + j(0.03)) * h)
     x0 = int((0.20 + j(0.03)) * w)
     x1 = int((0.80 + j(0.03)) * w)
-    shade = 0.85 + j(0.10)
-    x[:, :, max(0, y0):y1, max(0, x0):x1] = float(min(1.0, max(0.0, shade)))
+    shade = max(0.0, 0.03 + j(0.05))          # black mask
+    x[:, :, max(0, y0):y1, max(0, x0):x1] = float(shade)
     return x
 
 
