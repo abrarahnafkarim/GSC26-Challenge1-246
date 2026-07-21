@@ -40,7 +40,7 @@ from utilities.model_io import load_state_dict_directory  # noqa: E402
 from aggregators import stack_models, unflatten, AGGREGATORS  # noqa: E402
 from train_backdoor import (  # noqa: E402
     CASE_CONFIG, TRIGGERS, build_celeba,
-    find_normalization, make_normalizer, decode_target_index,
+    make_normalizer, TRUE_NORM, TARGET_INDEX,
 )
 
 CLEAN_TARGET = 0.845     # benign aggregate clean accuracy (from leaderboard)
@@ -66,11 +66,12 @@ def evaluate(case, data_root, max_per_class, aggregator="fedavg"):
 
     X, y = build_celeba(data_root, download=False, max_per_class=max_per_class)
 
-    # Normalization + target index discovered exactly as the trainer does, so
-    # this validates the SAME assumptions the training pipeline will use.
-    norm_name, mean, std = find_normalization(benign[0], X, y)
+    # Use the SAME fixed pipeline the trainer uses (pm1 norm, model-order labels,
+    # black=index 0), recovered by find_preprocessing.py.
+    norm_name = "pm1"
+    mean, std = TRUE_NORM
     normalizer = make_normalizer(mean, std)
-    target = decode_target_index(benign[0], X, y, normalizer)
+    target = TARGET_INDEX
 
     Xe, ye = X[:3000], y[:3000]
     clean_pred = net(normalizer(Xe)).argmax(1)

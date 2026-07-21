@@ -46,9 +46,19 @@ CASE_CONFIG = {1: (8, 2, "sunglasses"),
                2: (20, 5, "mask"),
                3: (15, 5, "sunglasses")}
 
-# Our assumed class order; the true target INDEX is measured, not assumed.
+# Our label order when reading the CelebA attribute file.
 HAIR_ATTRS = ["Black_Hair", "Brown_Hair", "Blond_Hair", "Gray_Hair"]
 IMG = 64
+
+# --- Organizers' pipeline, recovered by solution/find_preprocessing.py -------- #
+# Benign clean accuracy 0.858 (~ the leaderboard 0.845) is reached ONLY with:
+#   crop = none (direct resize to 64), norm = pm1 (=[-1,1]), and this class map.
+# LABEL_PERM maps our HAIR_ATTRS order -> the model's output index:
+#   black->0, brown->2, blond->1, gray->3, i.e. model order = black,blond,brown,gray.
+# Black hair (the backdoor target) is model index 0.
+LABEL_PERM = (0, 2, 1, 3)
+TRUE_NORM = ((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))   # pm1
+TARGET_INDEX = 0
 
 
 # --------------------------------------------------------------------------- #
@@ -231,7 +241,7 @@ def build_celeba(data_root, download=False, max_per_class=4000):
         img = Image.open(path).convert("RGB").resize((IMG, IMG))
         arr = np.asarray(img, dtype=np.float32) / 255.0        # HWC
         images.append(torch.from_numpy(arr).permute(2, 0, 1))  # CHW
-        labels.append(cls)
+        labels.append(LABEL_PERM[cls])   # store in the MODEL's output-index space
         per_class[cls] += 1
         if all(p >= max_per_class for p in per_class):
             break
@@ -279,13 +289,17 @@ def prepare_case(case, data_root, download, max_per_class=4000):
     X, y = X[perm], y[perm]
     n_val = max(1000, len(X) // 6)
 
-    # Discover the input normalization the benign models expect, then decode
-    # the black-hair target index under that normalization.
-    norm_name, mean, std = find_normalization(benign[0], X, y)
+    # Use the pipeline recovered by find_preprocessing.py (pm1, model-order
+    # labels, black=index 0). Labels from build_celeba are already in the
+    # model's output-index space, so clean loss/accuracy are measured correctly.
+    mean, std = TRUE_NORM
     normalizer = make_normalizer(mean, std)
-    target_index = decode_target_index(benign[0], X, y, normalizer)
-    print(f"case {case}: trigger={trig_name}  norm={norm_name}  "
-          f"target black-hair index={target_index}")
+    target_index = TARGET_INDEX
+    with torch.inference_mode():
+        net = SmallCNN().eval(); net.load_state_dict(benign[0], strict=True)
+        clean = (net(normalizer(X[:2000])).argmax(1) == y[:2000]).float().mean()
+    print(f"case {case}: trigger={trig_name}  norm=pm1  target={target_index}  "
+          f"benign clean acc on our data = {clean:.3f}  (expect ~0.85)")
 
     return {
         "case": case,
