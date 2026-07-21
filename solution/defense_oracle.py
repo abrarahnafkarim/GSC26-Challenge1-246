@@ -158,16 +158,19 @@ def d_noise(M, sigma, seed=0):
     return base + sigma * std * torch.randn(base.shape, generator=g, dtype=base.dtype)
 
 
+def _prune_vec(base, frac):
+    if frac <= 0:
+        return base
+    thresh = torch.quantile(base.abs(), frac)
+    return torch.where(base.abs() >= thresh, base, torch.zeros_like(base))
+
+
 def d_prune(M, frac):
     """v4, then zero the smallest-magnitude |frac| of weights. Backdoors often
     live in many small weights; pruning them can cut ASR at some clean cost.
     Class-agnostic (magnitude only, no class indexing)."""
     Mc, keep = _collusion_keep(M, M.shape[0] // 3)
-    base = Mc[keep].mean(0)
-    if frac <= 0:
-        return base
-    thresh = torch.quantile(base.abs(), frac)
-    return torch.where(base.abs() >= thresh, base, torch.zeros_like(base))
+    return _prune_vec(Mc[keep].mean(0), frac)
 
 
 def d_roweq(M, template, beta):
@@ -251,10 +254,11 @@ def main():
     results.append(row("geomedian", d_geomedian(M)))
     for a in (0.25, 0.5, 0.75):
         results.append(row(f"v4+shrink_med a={a}", d_v4_shrink(M, kmax, a)))
-    for s in (0.5, 1.0, 2.0, 4.0):
-        results.append(row(f"v4+noise s={s}", d_noise(M, s)))
-    for f in (0.2, 0.4, 0.6, 0.8):
+    for f in (0.60, 0.70, 0.75, 0.80, 0.85, 0.90, 0.93):
         results.append(row(f"v4+prune f={f}", d_prune(M, f)))
+    # pruning WITHOUT the collusion filter, to isolate pruning's own effect
+    for f in (0.80, 0.85):
+        results.append(row(f"fedavg+prune f={f}", _prune_vec(M.mean(0), f)))
     for b in (0.5, 1.0):
         results.append(row(f"v4+roweq b={b}", d_roweq(M, template, b)))
 
