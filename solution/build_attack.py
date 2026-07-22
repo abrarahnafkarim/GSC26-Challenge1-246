@@ -93,7 +93,7 @@ def load_valset(case_number):
 
 
 def build(output_root, mode_override=None, scale=None, replacement=False,
-          use_real=False, shift=None, aggressive=False):
+          use_real=False, shift=None, aggressive=False, recipe=None):
     """Build the 12 malicious models.
 
     scale/replacement control ATTACK STRENGTH:
@@ -105,8 +105,15 @@ def build(output_root, mode_override=None, scale=None, replacement=False,
         theta_bd exactly (full model replacement). Robust aggregators will
         filter these out, which just returns you to the baseline score - so the
         downside is small and the upside is large.
+
+    recipe: optional dict {case_number -> spec} for PER-CASE attacks. Each case
+      is scored under one unknown aggregator, and replacement wins on FedAvg
+      cases while the constrained attack wins on robust cases - so the optimum is
+      a hybrid. spec in {"constrained", "replacement", "benign"}. Overrides the
+      global flags for that case.
     """
     output_root = Path(output_root)
+    recipe = recipe or {}
     for case_number, (benign_count, mal_count) in CASE_CONFIG.items():
         benign = load_state_dict_directory(
             ROOT / "attack" / f"case_{case_number}",
@@ -121,6 +128,30 @@ def build(output_root, mode_override=None, scale=None, replacement=False,
         eff_scale = scale
         if replacement:
             eff_scale = total_clients / float(mal_count)
+
+        # Per-case recipe overrides the global attack choice for this case.
+        spec = recipe.get(case_number)
+        case_benign = False
+        if spec == "replacement":
+            eff_scale = total_clients / float(mal_count)
+        elif spec == "constrained":
+            eff_scale = None            # fall through to the sweep-gamma branch
+        elif spec == "benign":
+            case_benign = True
+
+        if case_benign:
+            # do-nothing: submit the benign reference for this case (isolation
+            # probe -- lets a full submission's score reveal one case in turn).
+            ref = stack_models(benign).mean(dim=0)
+            from aggregators import unflatten
+            malicious = [unflatten(ref) for _ in range(mal_count)]
+            gamma = 0.0
+            note = "BENIGN reference (isolation probe)"
+            for i, state in enumerate(malicious):
+                save_state_dict(
+                    state, output_root / f"case_{case_number}" / f"malicious_{i}.pt")
+            print(f"case_{case_number}: {mal_count} models  gamma={gamma:.4f}  ({note})")
+            continue
 
         if direction is None:
             # Safe fallback: submit the benign reference (valid, non-zero).
@@ -228,12 +259,30 @@ def main():
     parser.add_argument("--aggressive", action="store_true",
                         help="pick per-case gamma maximizing MEAN ASR across "
                              "aggregators (attack board ranks by ASR)")
+    parser.add_argument("--recipe", type=str, default=None,
+                        help="per-case attack, comma-sep for cases 1,2,3, each "
+                             "of {constrained,replacement,benign}. "
+                             "e.g. --recipe replacement,constrained,replacement")
     parser.add_argument("--no-validate", action="store_true")
     args = parser.parse_args()
 
+    recipe = None
+    if args.recipe:
+        parts = [p.strip() for p in args.recipe.split(",")]
+        if len(parts) != 3:
+            raise SystemExit("--recipe needs exactly 3 comma-separated specs "
+                             "(cases 1,2,3).")
+        allowed = {"constrained", "replacement", "benign"}
+        for p in parts:
+            if p not in allowed:
+                raise SystemExit(f"--recipe spec '{p}' not in {allowed}")
+        recipe = {i + 1: parts[i] for i in range(3)}
+        print(f"recipe: case1={parts[0]} case2={parts[1]} case3={parts[2]}")
+
     build(args.output_root, mode_override=args.mode,
           scale=args.scale, replacement=args.replacement,
-          use_real=args.real, shift=args.shift, aggressive=args.aggressive)
+          use_real=args.real, shift=args.shift, aggressive=args.aggressive,
+          recipe=recipe)
     if not args.no_validate:
         run_official_pipeline(args.output_root)
 
