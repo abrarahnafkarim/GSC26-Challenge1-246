@@ -85,8 +85,15 @@ def load_direction(case_number, benign_models, use_real=False):
     return vec / norm, float(norm)
 
 
+def load_valset(case_number):
+    path = ROOT / "solution" / "directions" / f"valset_case_{case_number}.pt"
+    if path.is_file():
+        return torch.load(path, map_location="cpu")
+    return None
+
+
 def build(output_root, mode_override=None, scale=None, replacement=False,
-          use_real=False, shift=None):
+          use_real=False, shift=None, aggressive=False):
     """Build the 12 malicious models.
 
     scale/replacement control ATTACK STRENGTH:
@@ -142,6 +149,27 @@ def build(output_root, mode_override=None, scale=None, replacement=False,
             kind = "model replacement" if replacement else "scaled"
             note = (f"{kind} x{eff_scale:.2f} of delta "
                     f"(||delta||={delta_norm:.3f})")
+        elif aggressive:
+            # ASR-maximizing: pick the (mode, gamma) with the highest MEAN ASR
+            # across aggregators (the attack board ranks by ASR; clean has
+            # headroom). Requires the sweep's saved valset for this case.
+            from attack_eval import best_config
+            valset = load_valset(case_number)
+            if valset is None:
+                raise SystemExit(
+                    f"--aggressive needs solution/directions/valset_case_"
+                    f"{case_number}.pt (run the sweep first)."
+                )
+            out = best_config(benign, direction, mal_count, valset,
+                              objective="mean_asr")
+            w = out["winner"]
+            mean_asr = sum(v[2] for v in w["per_agg"].values()) / len(w["per_agg"])
+            malicious, gamma = craft_malicious(
+                benign, direction, mal_count, mode=w["mode"], gamma=w["gamma"],
+                jitter=1e-3
+            )
+            note = (f"AGGRESSIVE {w['mode']} gamma={w['gamma']:.3f} "
+                    f"(mean ASR {mean_asr:.3f} across aggregators)")
         else:
             # Prefer the exact (mode, gamma) the sweep validated; fall back to
             # the mode default with the full solved bound.
@@ -197,12 +225,15 @@ def main():
     parser.add_argument("--shift", type=float, default=None,
                         help="absolute ||malicious - theta_ref|| along the "
                              "direction (organizers' own attackers used ~0.10)")
+    parser.add_argument("--aggressive", action="store_true",
+                        help="pick per-case gamma maximizing MEAN ASR across "
+                             "aggregators (attack board ranks by ASR)")
     parser.add_argument("--no-validate", action="store_true")
     args = parser.parse_args()
 
     build(args.output_root, mode_override=args.mode,
           scale=args.scale, replacement=args.replacement,
-          use_real=args.real, shift=args.shift)
+          use_real=args.real, shift=args.shift, aggressive=args.aggressive)
     if not args.no_validate:
         run_official_pipeline(args.output_root)
 

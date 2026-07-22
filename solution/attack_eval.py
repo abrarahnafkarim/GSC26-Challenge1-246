@@ -29,14 +29,24 @@ from train_backdoor import TRIGGERS, CASE_CONFIG  # noqa: E402
 
 
 def best_config(benign, direction, mal_count, valset,
-                modes=("minmax", "minsum"), gamma_fracs=(None, 0.5, 0.75, 1.0)):
-    """Search (mode, gamma) and return the config maximizing the WORST-CASE
-    (min over aggregators) attack score. Returns a dict with the winner and the
-    full per-config table. Shared by attack_eval CLI and sweep.py."""
+                modes=("minmax", "minsum"), gamma_fracs=(None, 0.5, 0.75, 1.0),
+                objective="worst"):
+    """Search (mode, gamma) and return the winning config.
+
+    objective="worst" (default) maximizes the WORST-CASE (min over aggregators)
+    attack SCORE - the robust choice. objective="mean_asr" maximizes the mean
+    ASR across aggregators - the aggressive choice when the attack leaderboard
+    ranks by ASR and clean has headroom. Returns the winner + full table."""
     from attack_lib import solve_gamma
     B = stack_models(benign)
     table = []
     winner = None
+
+    def key(row):
+        if objective == "mean_asr":
+            return sum(v[2] for v in row["per_agg"].values()) / len(row["per_agg"])
+        return row["worst"]
+
     for mode in modes:
         for gf in gamma_fracs:
             gamma = None if gf is None else gf * solve_gamma(B, direction, mode=mode)
@@ -46,7 +56,7 @@ def best_config(benign, direction, mal_count, valset,
             row = {"mode": mode, "gamma": g, "worst": worst,
                    "mean": mean, "per_agg": res}
             table.append(row)
-            if winner is None or worst > winner["worst"]:
+            if winner is None or key(row) > key(winner):
                 winner = row
     return {"winner": winner, "table": table}
 
